@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -49,6 +48,18 @@ type VoidedPurchaseResponse struct {
 	VoidedPurchases []VoidedPurchase `json:"voidedPurchases"`
 }
 
+type Purchase struct {
+	PurchaseTimeMillis   string `json:"purchaseTimeMillis"`
+	PurchaseState        int    `json:"purchaseState"`
+	ConsumptionState     int    `json:"consumptionState"`
+	DeveloperPayload     string `json:"developerPayload"`
+	OrderId              string `json:"orderId"`
+	PurchaseType         int    `json:"purchaseType"`
+	AcknowledgementState int    `json:"acknowledgementState"`
+	Kind                 string `json:"kind"`
+	RegionCode           string `json:"regionCode"`
+}
+
 type VoidedPurchase struct {
 	PurchaseToken      string `json:"purchaseToken"`
 	PurchaseTimeMillis string `json:"purchaseTimeMillis"`
@@ -59,17 +70,12 @@ type VoidedPurchase struct {
 	Kind               string `json:"kind"`
 }
 
-var ctx = context.Background()
+func getReceiptByPurchaseToken(packageName, productId, purchaseToken string) *Purchase {
 
-// CheckReceiptByPurchaseToken 테스트 용도: Purchase Token으로 Order ID 알아내기
-func CheckReceiptByPurchaseToken() {
-	packageName := os.Getenv("VOIDCHECKER_ANDROID_PACKAGE_NAME")
 	credPath := os.Getenv("VOIDCHECKER_SERVICE_ACCOUNT_CRED_PATH")
 
 	cachedAccessToken := getCachedAccessToken(credPath)
 
-	productId := os.Getenv("VOIDCHECKER_ANDROID_TEST_PRODUCT_ID")
-	purchaseToken := os.Getenv("VOIDCHECKER_ANDROID_TEST_PURCHASE_TOKEN")
 	getUrl := fmt.Sprintf("https://www.googleapis.com/androidpublisher/v3/applications/%v/purchases/products/%v/tokens/%v?access_token=%v", packageName, productId, purchaseToken, cachedAccessToken)
 
 	log.Println("GET URL: " + getUrl)
@@ -92,9 +98,18 @@ func CheckReceiptByPurchaseToken() {
 	println("==================================")
 	println(str)
 	println("==================================")
+
+	var purchase Purchase
+	err = json.Unmarshal(respBody, &purchase)
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+
+	return &purchase
 }
 
-func CheckGoogle() {
+func CheckGoogleForVoidedReceipts() {
 	packageName := os.Getenv("VOIDCHECKER_ANDROID_PACKAGE_NAME")
 	credPath := os.Getenv("VOIDCHECKER_SERVICE_ACCOUNT_CRED_PATH")
 
@@ -248,7 +263,46 @@ func main() {
 		log.Println("Error loading .env file")
 	}
 
-	CheckGoogle()
+	CheckGoogleForVoidedReceipts()
 
-	CheckReceiptByPurchaseToken()
+	getReceiptByPurchaseToken(
+		os.Getenv("VOIDCHECKER_ANDROID_PACKAGE_NAME"),
+		os.Getenv("VOIDCHECKER_ANDROID_TEST_PRODUCT_ID"),
+		os.Getenv("VOIDCHECKER_ANDROID_TEST_PURCHASE_TOKEN"),
+	)
+
+	http.HandleFunc("/verify", verifyHandler)
+
+	listenAddr := ":60350"
+	log.Println("LISTEN started on " + listenAddr)
+	_ = http.ListenAndServe(listenAddr, nil)
+}
+
+func verifyHandler(writer http.ResponseWriter, request *http.Request) {
+	packageName := ""
+	productId := ""
+	transactionId := ""
+
+	for key := range request.Header {
+		value := request.Header[key]
+		log.Println(key, value)
+
+		if key == "Package-Name" {
+			packageName = value[0]
+		} else if key == "Product-Id" {
+			productId = value[0]
+		} else if key == "Transaction-Id" {
+			transactionId = value[0]
+		}
+	}
+
+	receipt := getReceiptByPurchaseToken(packageName, productId, transactionId)
+	if receipt == nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte("FAILED"))
+	} else {
+		writer.Header().Set("Order-Id", receipt.OrderId)
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("OK"))
+	}
 }
