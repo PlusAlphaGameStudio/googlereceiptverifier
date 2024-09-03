@@ -144,14 +144,24 @@ func CheckGoogleForVoidedReceipts() {
 }
 
 var cachedAccessToken string
+var lastAccessTokenUpdateTime = time.UnixMilli(0)
 
 func getCachedAccessToken(credPath string) string {
+	now := time.Now().UTC()
+
+	tokenAge := now.Sub(lastAccessTokenUpdateTime)
+
+	if tokenAge >= 30*time.Minute {
+		cachedAccessToken = ""
+	}
+
 	if len(cachedAccessToken) == 0 {
 		newAccessToken, err := getNewGoogleAccessToken(credPath)
 		if err != nil {
 			panic(err)
 		}
 		cachedAccessToken = newAccessToken.AccessToken
+		lastAccessTokenUpdateTime = now
 	}
 
 	return cachedAccessToken
